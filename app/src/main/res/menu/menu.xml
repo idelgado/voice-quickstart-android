@@ -4,8 +4,8 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <item android:id="@+id/speaker_menu_item"
-        android:title="@string/turn_speaker_on"
-        android:icon="@drawable/ic_volume_up_white_24dp"
+        android:title="@string/select_device"
+        android:icon="@drawable/ic_devices_white_24dp"
         app:showAsAction="ifRoom"/>
 
 </menu>

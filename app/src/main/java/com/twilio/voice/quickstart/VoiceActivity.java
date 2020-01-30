@@ -11,8 +11,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
-import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -48,14 +46,20 @@ import com.twilio.voice.ConnectOptions;
 import com.twilio.voice.RegistrationException;
 import com.twilio.voice.RegistrationListener;
 import com.twilio.voice.Voice;
+import com.twilio.voice.quickstart.audio.AppRTCAudioManager;
+import com.twilio.voice.quickstart.audio.AudioDevice;
+import com.twilio.voice.quickstart.audio.AudioDeviceSelector;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class VoiceActivity extends AppCompatActivity {
 
     private static final String TAG = "VoiceActivity";
-    private static final String identity = "alice";
+    private static final String identity = "bob";
     /*
      * You must provide the URL to the publicly accessible Twilio access token server route
      *
@@ -65,13 +69,11 @@ public class VoiceActivity extends AppCompatActivity {
      *
      * For example : https://myurl.io/accessToken.php
      */
-    private static final String TWILIO_ACCESS_TOKEN_SERVER_URL = "TWILIO_ACCESS_TOKEN_SERVER_URL";
+    private static final String TWILIO_ACCESS_TOKEN_SERVER_URL = "https://49f5f3c5.ngrok.io/accessToken";
 
     private static final int MIC_PERMISSION_REQUEST_CODE = 1;
 
     private String accessToken;
-    private AudioManager audioManager;
-    private int savedAudioMode = AudioManager.MODE_INVALID;
 
     private boolean isReceiverRegistered = false;
     private VoiceBroadcastReceiver voiceBroadcastReceiver;
@@ -91,9 +93,15 @@ public class VoiceActivity extends AppCompatActivity {
     private CallInvite activeCallInvite;
     private Call activeCall;
     private int activeCallNotificationId;
+    private AppRTCAudioManager audioManager;
+    private AppRTCAudioManager.AudioManagerEvents audioManagerEvents =
+            (selectedAudioDevice, availableAudioDevices) -> {
+
+    };
 
     RegistrationListener registrationListener = registrationListener();
     Call.Listener callListener = callListener();
+    private AudioDeviceSelector audioDeviceSelector;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,11 +136,11 @@ public class VoiceActivity extends AppCompatActivity {
         voiceBroadcastReceiver = new VoiceBroadcastReceiver();
         registerReceiver();
 
-        /*
-         * Needed for setting/abandoning audio focus during a call
-         */
-        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        audioManager.setSpeakerphoneOn(true);
+        // audioManager = AppRTCAudioManager.create(getApplicationContext(), AppRTCAudioManager.SpeakerphoneBehavior.AUTO);
+        //audioManager.start(audioManagerEvents);
+
+        audioDeviceSelector = AudioDeviceSelector.create(this, audioManagerEvents);
+        audioDeviceSelector.start();
 
         /*
          * Enable changing the volume using the up/down keys during a conversation
@@ -219,7 +227,6 @@ public class VoiceActivity extends AppCompatActivity {
 
             @Override
             public void onConnectFailure(@NonNull Call call, @NonNull CallException error) {
-                setAudioFocus(false);
                 if (BuildConfig.playCustomRingback) {
                     SoundPoolManager.getInstance(VoiceActivity.this).stopRinging();
                 }
@@ -236,7 +243,6 @@ public class VoiceActivity extends AppCompatActivity {
 
             @Override
             public void onConnected(@NonNull Call call) {
-                setAudioFocus(true);
                 if (BuildConfig.playCustomRingback) {
                     SoundPoolManager.getInstance(VoiceActivity.this).stopRinging();
                 }
@@ -256,7 +262,6 @@ public class VoiceActivity extends AppCompatActivity {
 
             @Override
             public void onDisconnected(@NonNull Call call, CallException error) {
-                setAudioFocus(false);
                 if (BuildConfig.playCustomRingback) {
                     SoundPoolManager.getInstance(VoiceActivity.this).stopRinging();
                 }
@@ -317,6 +322,8 @@ public class VoiceActivity extends AppCompatActivity {
 
     @Override
     public void onDestroy() {
+        // audioManager.stop();
+        audioDeviceSelector.stop();
         SoundPoolManager.getInstance(this).release();
         super.onDestroy();
     }
@@ -538,43 +545,6 @@ public class VoiceActivity extends AppCompatActivity {
         button.setBackgroundTintList(colorStateList);
     }
 
-    private void setAudioFocus(boolean setFocus) {
-        if (audioManager != null) {
-            if (setFocus) {
-                savedAudioMode = audioManager.getMode();
-                // Request audio focus before making any device switch.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    AudioAttributes playbackAttributes = new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build();
-                    AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                            .setAudioAttributes(playbackAttributes)
-                            .setAcceptsDelayedFocusGain(true)
-                            .setOnAudioFocusChangeListener(i -> {
-                            })
-                            .build();
-                    audioManager.requestAudioFocus(focusRequest);
-                } else {
-                    audioManager.requestAudioFocus(
-                            focusChange -> { },
-                            AudioManager.STREAM_VOICE_CALL,
-                            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
-                }
-                /*
-                 * Start by setting MODE_IN_COMMUNICATION as default audio mode. It is
-                 * required to be in this mode when playout and/or recording starts for
-                 * best possible VoIP performance. Some devices have difficulties with speaker mode
-                 * if this is not set.
-                 */
-                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-            } else {
-                audioManager.setMode(savedAudioMode);
-                audioManager.abandonAudioFocus(null);
-            }
-        }
-    }
-
     private boolean checkPermissionForMicrophone() {
         int resultMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO);
         return resultMic == PackageManager.PERMISSION_GRANTED;
@@ -619,13 +589,21 @@ public class VoiceActivity extends AppCompatActivity {
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         if (item.getItemId() == R.id.speaker_menu_item) {
-            if (audioManager.isSpeakerphoneOn()) {
-                audioManager.setSpeakerphoneOn(false);
-                item.setIcon(R.drawable.ic_phonelink_ring_white_24dp);
-            } else {
-                audioManager.setSpeakerphoneOn(true);
-                item.setIcon(R.drawable.ic_volume_up_white_24dp);
+            List<AudioDevice> audioDevices = audioDeviceSelector.getAudioDevices();
+
+            ArrayList<String> audioDeviceNames = new ArrayList<>();
+            for (AudioDevice audioDevice : audioDevices) {
+                audioDeviceNames.add(audioDevice.getName());
             }
+
+            createAudioDeviceDialog(
+                    this,
+                    0,
+                    audioDeviceNames,
+                    (dialogInterface, i) -> {
+                        dialogInterface.dismiss();
+                    }).show();
+
         }
         return true;
     }
@@ -652,6 +630,22 @@ public class VoiceActivity extends AppCompatActivity {
 
         return alertDialogBuilder.create();
 
+    }
+
+    private static AlertDialog createAudioDeviceDialog(
+            final Activity activity,
+            int currentDevice,
+            ArrayList<String> availableDevices,
+            DialogInterface.OnClickListener audioDeviceClickListener) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(activity);
+        builder.setTitle(activity.getString(R.string.select_device));
+
+        builder.setSingleChoiceItems(
+                availableDevices.toArray(new CharSequence[0]),
+                currentDevice,
+                audioDeviceClickListener);
+
+        return builder.create();
     }
 
     private void showIncomingCallDialog() {
