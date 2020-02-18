@@ -27,6 +27,7 @@ import android.widget.Chronometer;
 import android.widget.EditText;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
 import androidx.core.app.ActivityCompat;
@@ -46,15 +47,15 @@ import com.twilio.voice.ConnectOptions;
 import com.twilio.voice.RegistrationException;
 import com.twilio.voice.RegistrationListener;
 import com.twilio.voice.Voice;
-import com.twilio.voice.quickstart.audio.AppRTCAudioManager;
-import com.twilio.voice.quickstart.audio.AudioDevice;
-import com.twilio.voice.quickstart.audio.AudioDeviceSelector;
+import com.twilio.voice.quickstart.audio.helper.AudioDevice;
+import com.twilio.voice.quickstart.audio.helper.AudioDeviceSelector;
+import com.twilio.voice.quickstart.audio.AudioManagerEvents;
+import com.twilio.voice.quickstart.audio.helper.AudioDeviceChangeListener;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 public class VoiceActivity extends AppCompatActivity {
 
@@ -69,7 +70,7 @@ public class VoiceActivity extends AppCompatActivity {
      *
      * For example : https://myurl.io/accessToken.php
      */
-    private static final String TWILIO_ACCESS_TOKEN_SERVER_URL = "https://49f5f3c5.ngrok.io/accessToken";
+    private static final String TWILIO_ACCESS_TOKEN_SERVER_URL = "https://06011ddc.ngrok.io/accessToken";
 
     private static final int MIC_PERMISSION_REQUEST_CODE = 1;
 
@@ -93,15 +94,11 @@ public class VoiceActivity extends AppCompatActivity {
     private CallInvite activeCallInvite;
     private Call activeCall;
     private int activeCallNotificationId;
-    private AppRTCAudioManager audioManager;
-    private AppRTCAudioManager.AudioManagerEvents audioManagerEvents =
-            (selectedAudioDevice, availableAudioDevices) -> {
-
-    };
 
     RegistrationListener registrationListener = registrationListener();
     Call.Listener callListener = callListener();
     private AudioDeviceSelector audioDeviceSelector;
+    private @Nullable AudioDevice audioDevice;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -136,10 +133,12 @@ public class VoiceActivity extends AppCompatActivity {
         voiceBroadcastReceiver = new VoiceBroadcastReceiver();
         registerReceiver();
 
-        // audioManager = AppRTCAudioManager.create(getApplicationContext(), AppRTCAudioManager.SpeakerphoneBehavior.AUTO);
-        //audioManager.start(audioManagerEvents);
-
-        audioDeviceSelector = AudioDeviceSelector.create(this, audioManagerEvents);
+        audioDeviceSelector = new AudioDeviceSelector(this, new AudioDeviceChangeListener() {
+            @Override
+            public void onAvailableAudioDevices(@NonNull List<AudioDevice> audioDevices, @Nullable AudioDevice selectedAudioDevice) {
+                audioDevice = selectedAudioDevice;
+            }
+        });
         audioDeviceSelector.start();
 
         /*
@@ -230,6 +229,7 @@ public class VoiceActivity extends AppCompatActivity {
                 if (BuildConfig.playCustomRingback) {
                     SoundPoolManager.getInstance(VoiceActivity.this).stopRinging();
                 }
+                audioDeviceSelector.deactivate();
                 Log.d(TAG, "Connect failure");
                 String message = String.format(
                         Locale.US,
@@ -265,6 +265,7 @@ public class VoiceActivity extends AppCompatActivity {
                 if (BuildConfig.playCustomRingback) {
                     SoundPoolManager.getInstance(VoiceActivity.this).stopRinging();
                 }
+                audioDeviceSelector.deactivate();
                 Log.d(TAG, "Disconnected");
                 if (error != null) {
                     String message = String.format(
@@ -421,6 +422,7 @@ public class VoiceActivity extends AppCompatActivity {
     private DialogInterface.OnClickListener callClickListener() {
         return (dialog, which) -> {
             // Place a call
+            audioDeviceSelector.activate();
             EditText contact = ((AlertDialog) dialog).findViewById(R.id.contact);
             params.put("to", contact.getText().toString());
             ConnectOptions connectOptions = new ConnectOptions.Builder(accessToken)
@@ -501,6 +503,7 @@ public class VoiceActivity extends AppCompatActivity {
      */
     private void answer() {
         SoundPoolManager.getInstance(this).stopRinging();
+        audioDeviceSelector.activate();
         activeCallInvite.accept(this, callListener);
         notificationManager.cancel(activeCallNotificationId);
         setCallUI();
@@ -588,20 +591,24 @@ public class VoiceActivity extends AppCompatActivity {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        if (item.getItemId() == R.id.speaker_menu_item) {
+        if (item.getItemId() == R.id.device_menu_item) {
+            AudioDevice audioDevice = audioDeviceSelector.getSelectedAudioDevice();
             List<AudioDevice> audioDevices = audioDeviceSelector.getAudioDevices();
 
+            int index = audioDevices.indexOf(audioDevice);
+
             ArrayList<String> audioDeviceNames = new ArrayList<>();
-            for (AudioDevice audioDevice : audioDevices) {
-                audioDeviceNames.add(audioDevice.getName());
+            for (AudioDevice a: audioDevices) {
+                audioDeviceNames.add(a.name);
             }
 
             createAudioDeviceDialog(
                     this,
-                    0,
+                    index,
                     audioDeviceNames,
                     (dialogInterface, i) -> {
                         dialogInterface.dismiss();
+                        audioDeviceSelector.selectDevice(audioDevices.get(i));
                     }).show();
 
         }
@@ -619,8 +626,7 @@ public class VoiceActivity extends AppCompatActivity {
         alertDialogBuilder.setNegativeButton("Cancel", cancelClickListener);
         alertDialogBuilder.setCancelable(false);
 
-        LayoutInflater li = LayoutInflater.from(activity);
-        View dialogView = li.inflate(
+        View dialogView = LayoutInflater.from(activity).inflate(
                 R.layout.dialog_call,
                 activity.findViewById(android.R.id.content),
                 false);
