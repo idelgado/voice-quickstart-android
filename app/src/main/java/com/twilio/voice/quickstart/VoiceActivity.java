@@ -322,7 +322,7 @@ public class VoiceActivity extends AppCompatActivity {
 
     @Override
     public void onDestroy() {
-        // audioManager.stop();
+        audioDeviceSelector.deactivate();
         audioDeviceSelector.stop();
         SoundPoolManager.getInstance(this).release();
         super.onDestroy();

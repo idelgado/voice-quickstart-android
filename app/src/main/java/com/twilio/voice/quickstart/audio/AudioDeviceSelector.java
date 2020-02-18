@@ -109,8 +109,8 @@ public class AudioDeviceSelector {
                 bluetoothController.stop();
                 state = State.STOPPED;
                 break;
-            case STOPPED:
             case ACTIVE:
+            case STOPPED:
                 throw new IllegalStateException();
         }
     }
@@ -181,10 +181,12 @@ public class AudioDeviceSelector {
                 enableSpeakerphone(savedSpeakerphoneEnabled);
 
                 audioManager.abandonAudioFocus(null);
+                state = State.STARTED;
                 break;
             case STARTED:
             case STOPPED:
-                throw new IllegalStateException();
+                // no-op;
+                break;
         }
     }
 
