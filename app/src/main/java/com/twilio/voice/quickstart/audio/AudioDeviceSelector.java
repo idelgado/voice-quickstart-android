@@ -120,7 +120,6 @@ public class AudioDeviceSelector {
      */
     public void activate() {
         ThreadUtils.checkIsOnMainThread();
-
         switch (state) {
             case STARTED:
                 savedAudioMode = audioManager.getMode();
@@ -172,15 +171,21 @@ public class AudioDeviceSelector {
      */
     public void deactivate() {
         ThreadUtils.checkIsOnMainThread();
+        switch (state) {
+            case ACTIVE:
+                bluetoothController.deactivate();
 
-        bluetoothController.deactivate();
+                // Restore stored audio state
+                audioManager.setMode(savedAudioMode);
+                mute(savedIsMicrophoneMuted);
+                enableSpeakerphone(savedSpeakerphoneEnabled);
 
-        // Restore stored audio state
-        audioManager.setMode(savedAudioMode);
-        mute(savedIsMicrophoneMuted);
-        enableSpeakerphone(savedSpeakerphoneEnabled);
-
-        audioManager.abandonAudioFocus(null);
+                audioManager.abandonAudioFocus(null);
+                break;
+            case STARTED:
+            case STOPPED:
+                throw new IllegalStateException();
+        }
     }
 
     /**
