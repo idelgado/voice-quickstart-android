@@ -47,10 +47,9 @@ import com.twilio.voice.ConnectOptions;
 import com.twilio.voice.RegistrationException;
 import com.twilio.voice.RegistrationListener;
 import com.twilio.voice.Voice;
-import com.twilio.voice.quickstart.audio.helper.AudioDevice;
-import com.twilio.voice.quickstart.audio.helper.AudioDeviceSelector;
-import com.twilio.voice.quickstart.audio.AudioManagerEvents;
-import com.twilio.voice.quickstart.audio.helper.AudioDeviceChangeListener;
+import com.twilio.voice.quickstart.audio.AudioDevice;
+import com.twilio.voice.quickstart.audio.AudioDeviceSelector;
+import com.twilio.voice.quickstart.audio.AudioDeviceChangeListener;
 
 import java.util.ArrayList;
 import java.util.HashMap;

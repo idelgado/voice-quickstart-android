@@ -1,5 +1,6 @@
 package com.twilio.voice.quickstart.audio;
 
+import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -15,58 +16,201 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.twilio.voice.quickstart.audio.helper.AudioDevice;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-public class AudioDeviceSelector implements BluetoothController.Listener {
-
+public class AudioDeviceSelector {
     private static final String TAG = "AudioDeviceSelector";
+
+    private final AudioDeviceChangeListener audioDeviceChangeListener;
     private final Context context;
-    private final android.media.AudioManager audioManager;
-    private final AudioManagerEvents audioManagerEvents;
-    private final WiredHeadsetReceiver wiredHeadsetReceiver;
+    private final AudioManager audioManager;
     private final boolean hasEarpiece;
     private final boolean hasSpeakerphone;
-    private boolean hasWiredHeadset;
+    private final BluetoothController bluetoothController;
+
+    private @Nullable AudioDevice selectedDevice;
+    private @Nullable AudioDevice userSelectedDevice;
+    private @NonNull State state;
+    private @NonNull WiredHeadsetReceiver wiredHeadsetReceiver;
+    private boolean wiredHeadseatAvaiable;
+    private ArrayList<AudioDevice> availableAudioDevices = new ArrayList<>();
+
+    // Saved Audio Settings
     private int savedAudioMode;
     private boolean savedIsMicrophoneMuted;
     private boolean savedSpeakerphoneEnabled;
-    private List<AudioDevice> audioDevices = new ArrayList<>();
-    private AudioDevice selectedAudioDevice;
-    private boolean userSelected = false;
-    private boolean running = false;
+
+    private enum State {
+        STARTED,
+        ACTIVE,
+        STOPPED
+    }
+
     private AudioDevice EARPIECE_AUDIO_DEVICE = new AudioDevice(AudioDevice.Type.EARPIECE, "Earpiece");
     private AudioDevice SPEAKERPHONE_AUDIO_DEVICE = new AudioDevice(AudioDevice.Type.SPEAKERPHONE, "Speakerphone");
     private AudioDevice WIRED_HEADSET_AUDIO_DEVICE = new AudioDevice(AudioDevice.Type.WIRED_HEADSET, "Wired Headset");
-    private AudioDevice bluetoothDevice;
-    private final BluetoothController bluetoothController;
+    private @Nullable AudioDevice bluetoothAudioDevice;
 
-    public static AudioDeviceSelector create(Context context, AudioManagerEvents audioManagerEvents) {
-        return new AudioDeviceSelector(context, audioManagerEvents);
-    }
-
-    private AudioDeviceSelector(Context context, AudioManagerEvents audioManagerEvents) {
+    public AudioDeviceSelector(@NonNull Context context,
+                               @NonNull AudioDeviceChangeListener audioDeviceChangeListener) {
+        this.audioDeviceChangeListener = audioDeviceChangeListener;
         ThreadUtils.checkIsOnMainThread();
         this.context = context.getApplicationContext();
-        this.audioManager = (android.media.AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        this.audioManagerEvents = audioManagerEvents;
+        this.audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         this.wiredHeadsetReceiver = new WiredHeadsetReceiver();
-        this.bluetoothController = new BluetoothController(context, this);
+        this.bluetoothController = new BluetoothController(context, new BluetoothController.Listener() {
+            @Override
+            public void onBluetoothConnected(@NonNull BluetoothDevice bluetoothDevice) {
+                bluetoothAudioDevice = new AudioDevice(AudioDevice.Type.BLUETOOTH, bluetoothDevice.getName());
+                if (state == State.ACTIVE) {
+                    userSelectedDevice = bluetoothAudioDevice;
+                }
+                enumerateDevices();
+            }
+
+            @Override
+            public void onBluetoothDisconnected() {
+                bluetoothAudioDevice = null;
+                enumerateDevices();
+            }
+        });
         hasEarpiece = hasEarpiece();
         hasSpeakerphone = hasSpeakerphone();
+        state = State.STOPPED;
     }
 
+    /**
+     * Start listening for audio device changes
+     */
     public void start() {
         ThreadUtils.checkIsOnMainThread();
-        running = true;
-        // Store audio state
-        savedAudioMode = audioManager.getMode();
-        savedIsMicrophoneMuted = audioManager.isMicrophoneMute();
-        savedSpeakerphoneEnabled = audioManager.isSpeakerphoneOn();
+        switch (state) {
+            case STOPPED:
+                context.registerReceiver(wiredHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
+                bluetoothController.start();
+                state = State.STARTED;
+                break;
+            case STARTED:
+            case ACTIVE:
+                throw new IllegalStateException();
+        }
+    }
 
+    /**
+     * Stop listening for audio device changes
+     */
+    public void stop() {
+        ThreadUtils.checkIsOnMainThread();
+        switch (state) {
+            case STARTED:
+                context.unregisterReceiver(wiredHeadsetReceiver);
+                bluetoothController.stop();
+                state = State.STOPPED;
+                break;
+            case STOPPED:
+            case ACTIVE:
+                throw new IllegalStateException();
+        }
+    }
+
+    /**
+     * Request focus for the selected audio device
+     */
+    public void activate() {
+        ThreadUtils.checkIsOnMainThread();
+
+        switch (state) {
+            case STARTED:
+                savedAudioMode = audioManager.getMode();
+                savedIsMicrophoneMuted = audioManager.isMicrophoneMute();
+                savedSpeakerphoneEnabled = audioManager.isSpeakerphoneOn();
+
+                // Always set mute to false for WebRTC
+                mute(false);
+
+                setAudioFocus();
+
+                if (selectedDevice != null) {
+                    activate(selectedDevice);
+                }
+                state = State.ACTIVE;
+                break;
+            case ACTIVE:
+                // Activate the newly selected device
+                if (selectedDevice != null) {
+                    activate(selectedDevice);
+                }
+                break;
+            case STOPPED:
+                throw new IllegalStateException();
+        }
+
+    }
+
+    private void activate(@NonNull AudioDevice audioDevice) {
+        switch (audioDevice.type) {
+            case BLUETOOTH:
+                enableSpeakerphone(false);
+                bluetoothController.activate();
+                break;
+            case EARPIECE:
+            case WIRED_HEADSET:
+                enableSpeakerphone(false);
+                bluetoothController.deactivate();
+                break;
+            case SPEAKERPHONE:
+                enableSpeakerphone(true);
+                bluetoothController.deactivate();
+                break;
+        }
+    }
+
+    /**
+     * Restore focus away from the selected audio device
+     */
+    public void deactivate() {
+        ThreadUtils.checkIsOnMainThread();
+
+        bluetoothController.deactivate();
+
+        // Restore stored audio state
+        audioManager.setMode(savedAudioMode);
+        mute(savedIsMicrophoneMuted);
+        enableSpeakerphone(savedSpeakerphoneEnabled);
+
+        audioManager.abandonAudioFocus(null);
+    }
+
+    /**
+     * Select the desired {@link AudioDevice}. If the provided {@link AudioDevice} is not available
+     * no changes are made. If the provided {@link AudioDevice} is null an {@link AudioDevice} is
+     * chosen based on the following preference: Bluetooth, Wired Headset, Microphone, Speakerphone
+     *
+     * @param audioDevice The {@link AudioDevice} to use
+     */
+    public void selectDevice(@Nullable AudioDevice audioDevice) {
+        ThreadUtils.checkIsOnMainThread();
+        userSelectedDevice = audioDevice;
+        enumerateDevices();
+    }
+
+    /**
+     * @return The selected {@link AudioDevice}
+     */
+    public @Nullable AudioDevice getSelectedAudioDevice() {
+        ThreadUtils.checkIsOnMainThread();
+        return selectedDevice != null ?
+                new AudioDevice(selectedDevice.type, selectedDevice.name) : null;
+    }
+
+    public @NonNull List<AudioDevice> getAudioDevices() {
+        ThreadUtils.checkIsOnMainThread();
+        return Collections.unmodifiableList(new ArrayList<>(availableAudioDevices));
+    }
+
+    private void setAudioFocus() {
         // Request audio focus before making any device switch.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             AudioAttributes playbackAttributes = new AudioAttributes.Builder()
@@ -93,135 +237,6 @@ public class AudioDeviceSelector implements BluetoothController.Listener {
          * if this is not set.
          */
         audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-
-        selectAudioDevice(null);
-
-        context.registerReceiver(wiredHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
-        bluetoothController.start();
-    }
-
-    public void stop() {
-        ThreadUtils.checkIsOnMainThread();
-        running = false;
-        // Restore stored audio state
-        audioManager.setMode(savedAudioMode);
-        audioManager.abandonAudioFocus(null);
-        mute(savedIsMicrophoneMuted);
-        enableSpeakerphone(savedSpeakerphoneEnabled);
-
-        bluetoothController.stop();
-
-        context.unregisterReceiver(wiredHeadsetReceiver);
-    }
-
-    @Override
-    public void onHeadsetDisconnected() {
-        bluetoothDevice = null;
-    }
-
-    @Override
-    public void onHeadsetConnected() {
-        bluetoothDevice = new AudioDevice(AudioDevice.Type.BLUETOOTH, "Bluetooth");
-        selectAudioDevice(bluetoothDevice);
-    }
-
-    @Override
-    public void onScoAudioDisconnected() {
-
-    }
-
-    @Override
-    public void onScoAudioConnected() {
-
-    }
-
-    public void setAudioDevice(@NonNull AudioDevice audioDevice) {
-        ThreadUtils.checkIsOnMainThread();
-        if (running) {
-            selectAudioDevice(audioDevice);
-        }
-    }
-
-    public @Nullable AudioDevice getSelectedAudioDevice() {
-        ThreadUtils.checkIsOnMainThread();
-        return (selectedAudioDevice == null) ?
-                null : new AudioDevice(selectedAudioDevice.type, selectedAudioDevice.name);
-    }
-
-    public @NonNull List<AudioDevice> getAudioDevices() {
-        ThreadUtils.checkIsOnMainThread();
-        return Collections.unmodifiableList(new ArrayList<>(audioDevices));
-    }
-
-    private void selectAudioDevice(@Nullable AudioDevice audioDevice) {
-        List<AudioDevice> availableAudioDevices = getAvailablePreferredAudioDevices();
-
-        if (!audioDevices.equals(availableAudioDevices)) {
-            audioDevices = availableAudioDevices;
-        }
-
-        if (audioDevice != null) {
-            if (audioDevices.contains(audioDevice)) {
-                applySelectedAudioDevice(audioDevice);
-            } else {
-                Log.e(TAG, audioDevice.name + " no longer available");
-            }
-        } else if (audioDevices.size() != 0) {
-            applySelectedAudioDevice(audioDevices.get(0));
-        } else {
-            selectedAudioDevice = null;
-        }
-    }
-
-    private void applySelectedAudioDevice(@NonNull AudioDevice audioDevice) {
-        if (!audioDevice.equals(selectedAudioDevice)) {
-            selectedAudioDevice = audioDevice;
-            Log.d(TAG, selectedAudioDevice.name + " selected");
-            apply(selectedAudioDevice.type);
-        }
-    }
-
-    private void apply(AudioDevice.Type type) {
-        switch (type) {
-            case BLUETOOTH:
-                enableSpeakerphone(false);
-                if (!bluetoothController.isOnHeadsetSco()) {
-                    bluetoothController.start();
-                }
-                break;
-            case EARPIECE:
-            case WIRED_HEADSET:
-                enableSpeakerphone(false);
-                if (bluetoothController.isOnHeadsetSco()) {
-                    bluetoothController.stop();
-                }
-                break;
-            case SPEAKERPHONE:
-                enableSpeakerphone(true);
-                if (bluetoothController.isOnHeadsetSco()) {
-                    bluetoothController.stop();
-                }
-                break;
-        }
-    }
-
-    private @NonNull List<AudioDevice> getAvailablePreferredAudioDevices() {
-        List<AudioDevice> availableAudioDevices = new ArrayList<>();
-
-        if (bluetoothDevice != null) {
-            availableAudioDevices.add(bluetoothDevice);
-        }
-        if (hasWiredHeadset) {
-            availableAudioDevices.add(WIRED_HEADSET_AUDIO_DEVICE);
-        }
-        if (hasEarpiece && !hasWiredHeadset) {
-            availableAudioDevices.add(EARPIECE_AUDIO_DEVICE);
-        }
-        if (hasSpeakerphone) {
-            availableAudioDevices.add(SPEAKERPHONE_AUDIO_DEVICE);
-        }
-
-        return availableAudioDevices;
     }
 
     private class WiredHeadsetReceiver extends BroadcastReceiver {
@@ -230,22 +245,80 @@ public class AudioDeviceSelector implements BluetoothController.Listener {
 
         @Override
         public void onReceive(Context context, Intent intent) {
+            ThreadUtils.checkIsOnMainThread();
             int state = intent.getIntExtra("state", STATE_UNPLUGGED);
             if (state == STATE_PLUGGED) {
-                hasWiredHeadset = true;
+                wiredHeadseatAvaiable = true;
                 Log.d(TAG, "Wired Headset available");
-                selectAudioDevice(WIRED_HEADSET_AUDIO_DEVICE);
+                if (AudioDeviceSelector.this.state == State.ACTIVE) {
+                    userSelectedDevice = WIRED_HEADSET_AUDIO_DEVICE;
+                }
+                enumerateDevices();
             } else {
-                hasWiredHeadset = false;
-                Log.d(TAG, "Wired Headset not available");
-                selectAudioDevice(null);
+                wiredHeadseatAvaiable = false;
+                enumerateDevices();
             }
         }
     }
 
+    private void enumerateDevices() {
+        availableAudioDevices.clear();
+        if (bluetoothAudioDevice != null) {
+            availableAudioDevices.add(bluetoothAudioDevice);
+        }
+        if (wiredHeadseatAvaiable) {
+            availableAudioDevices.add(WIRED_HEADSET_AUDIO_DEVICE);
+        }
+        if (hasEarpiece && !wiredHeadseatAvaiable) {
+            availableAudioDevices.add(EARPIECE_AUDIO_DEVICE);
+        }
+        if (hasSpeakerphone) {
+            availableAudioDevices.add(SPEAKERPHONE_AUDIO_DEVICE);
+        }
+
+        // Check whether the user selected device is still present
+        if (!userSelectedDevicePresent(availableAudioDevices)) {
+           userSelectedDevice = null;
+        }
+
+        // Select the audio device
+        if (userSelectedDevice != null && userSelectedDevicePresent(availableAudioDevices)) {
+            selectedDevice = userSelectedDevice;
+        } else if (availableAudioDevices.size() > 0) {
+            selectedDevice = availableAudioDevices.get(0);
+        } else {
+            selectedDevice = null;
+        }
+
+        // Activate the device if in the active state
+        if (state == State.ACTIVE) {
+            activate();
+        }
+
+        if (selectedDevice != null) {
+            audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
+                    new AudioDevice(selectedDevice.type, selectedDevice.name));
+        } else {
+            audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
+                    selectedDevice);
+        }
+    }
+
+    private boolean userSelectedDevicePresent(List<AudioDevice> audioDevices) {
+        for (AudioDevice audioDevice: audioDevices) {
+            if (audioDevice.equals(userSelectedDevice)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean hasEarpiece() {
-        Log.d(TAG, "Earpiece available");
-        return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
+        boolean hasEarpiece = context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
+        if (hasEarpiece) {
+            Log.d(TAG, "Earpiece available");
+        }
+        return hasEarpiece;
     }
 
     private boolean hasSpeakerphone() {
@@ -260,8 +333,8 @@ public class AudioDeviceSelector implements BluetoothController.Listener {
             }
             return false;
         } else {
-           Log.d(TAG, "Speakerphone available");
-           return true;
+            Log.d(TAG, "Speakerphone available");
+            return true;
         }
     }
 

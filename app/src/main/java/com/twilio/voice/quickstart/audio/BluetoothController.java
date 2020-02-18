@@ -1,286 +1,135 @@
 package com.twilio.voice.quickstart.audio;
 
-/*
- * Copyright 2017 Google Inc. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.media.AudioManager;
-import android.os.CountDownTimer;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import java.util.List;
 
 public class BluetoothController {
-    private final @NonNull Listener listener;
-    private final @NonNull Context context;
-    private final @NonNull BluetoothAdapter bluetoothAdapter;
-
-    private AudioManager mAudioManager;
-
-    private boolean mIsCountDownOn;
-    private boolean mIsStarting;
-    private boolean mIsOnHeadsetSco;
-    private boolean mIsStarted;
-
     private static final String TAG = "BluetoothController";
+    private final @NonNull AudioManager audioManager;
+    private final @NonNull Context context;
+    private final @NonNull Listener listener;
+    private final @Nullable BluetoothAdapter bluetoothAdapter;
+    private @Nullable BluetoothDevice bluetoothDevice;
 
     public interface Listener {
-        void onHeadsetDisconnected();
-
-        void onHeadsetConnected();
-
-        void onScoAudioDisconnected();
-
-        void onScoAudioConnected();
+        void onBluetoothConnected(@NonNull BluetoothDevice bluetoothDevice);
+        void onBluetoothDisconnected();
     }
 
-    public BluetoothController(Context context, Listener listener) {
+    public BluetoothController(@NonNull Context context, @NonNull Listener listener) {
         this.context = context;
         this.listener = listener;
+        this.audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         this.bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        mAudioManager = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
     }
 
-    /**
-     * Call this to start BluetoothController functionalities.
-     *
-     * @return The return value of startBluetooth()
-     */
-    public boolean start() {
-        if (!mIsStarted) {
-            mIsStarted = true;
-
-            mIsStarted = startBluetooth();
-        }
-
-        return mIsStarted;
-    }
-
-    /**
-     * Should call this on onResume or onDestroy.
-     * Unregister broadcast receivers and stop Sco audio connection
-     * and cancel count down.
-     */
-    public void stop() {
-        if (mIsStarted) {
-            mIsStarted = false;
-
-            stopBluetooth();
-        }
-    }
-
-    /**
-     * @return true if audio is connected through headset.
-     */
-    public boolean isOnHeadsetSco() {
-        return mIsOnHeadsetSco;
-    }
-
-    /**
-     * Register for bluetooth headset connection states and Sco audio states.
-     * Try to connect to bluetooth headset audio by calling startBluetoothSco().
-     * This is a work around for API < 11 to detect if a headset is connected before
-     * the application starts.
-     * <p/>
-     * The official documentation for startBluetoothSco() states
-     * <p/>
-     * "This method can be used by applications wanting to send and received audio to/from
-     * a bluetooth SCO headset while the phone is not in call."
-     * <p/>
-     * Does this mean that startBluetoothSco() would fail if the connected bluetooth device
-     * is not a headset?
-     * <p/>
-     * Thus if a call to startBluetoothSco() is successful, i.e broadcastReceiver will receive
-     * an ACTION_SCO_AUDIO_STATE_CHANGED with intent extra SCO_AUDIO_STATE_CONNECTED, then
-     * we assume that a headset is connected.
-     *
-     * @return false if device does not support bluetooth or current platform does not supports
-     * use of SCO for off call.
-     */
-    @SuppressWarnings("deprecation")
-    private boolean startBluetooth() {
-        Log.d(TAG, "startBluetooth");
-
-        // Device support bluetooth
+    public void start() {
         if (bluetoothAdapter != null) {
-            if (mAudioManager.isBluetoothScoAvailableOffCall()) {
-                context.registerReceiver(broadcastReceiver,
-                        new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED));
-                context.registerReceiver(broadcastReceiver,
-                        new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED));
-                context.registerReceiver(broadcastReceiver,
-                        new IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_CHANGED));
+            // Use the profile proxy to detect a bluetooth device that is already connected
+            bluetoothAdapter.getProfileProxy(context, new BluetoothProfile.ServiceListener() {
+                @Override
+                public void onServiceConnected(int profile, BluetoothProfile proxy) {
+                    List<BluetoothDevice> bluetoothDeviceList = proxy.getConnectedDevices();
+                    for (BluetoothDevice device : bluetoothDeviceList) {
+                        Log.d(TAG, "Bluetooth " + device.getName() + " connected");
+                        bluetoothDevice = device;
+                        listener.onBluetoothConnected(device);
+                    }
+                }
 
-                // Need to set audio mode to MODE_IN_CALL for call to startBluetoothSco() to succeed.
-                mAudioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                @Override
+                public void onServiceDisconnected(int profile) {
+                    Log.d(TAG, "Bluetooth disconnected");
+                    bluetoothDevice = null;
+                    listener.onBluetoothDisconnected();
+                }
 
-                mIsCountDownOn = true;
-                // mCountDown repeatedly tries to start bluetooth Sco audio connection.
-                mCountDown.start();
+            }, BluetoothProfile.HEADSET);
 
-                // need for audio sco, see broadcastReceiver
-                mIsStarting = true;
+            // Register for bluetooth device connection and audio state changes
+            context.registerReceiver(broadcastReceiver,
+                    new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED));
+            context.registerReceiver(broadcastReceiver,
+                    new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED));
+            context.registerReceiver(broadcastReceiver,
+                    new IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED));
 
-                return true;
-            }
         }
-
-        return false;
     }
 
-    /**
-     * Unregister broadcast receivers and stop Sco audio connection
-     * and cancel count down.
-     */
-    private void stopBluetooth() {
-        Log.d(TAG, "stopBluetooth");
-
-        if (mIsCountDownOn) {
-            mIsCountDownOn = false;
-            mCountDown.cancel();
+    public void stop() {
+        if (bluetoothAdapter != null) {
+            context.unregisterReceiver(broadcastReceiver);
         }
-
-        // Need to stop Sco audio connection here when the app
-        // change orientation or close with headset still turns on.
-        context.unregisterReceiver(broadcastReceiver);
-        mAudioManager.stopBluetoothSco();
-        mAudioManager.setMode(AudioManager.MODE_NORMAL);
     }
 
-    /**
-     * Handle headset and Sco audio connection states.
-     */
+    public void activate() {
+        audioManager.startBluetoothSco();
+    }
+
+    public void deactivate() {
+        audioManager.stopBluetoothSco();
+    }
+
     private BroadcastReceiver broadcastReceiver = new BroadcastReceiver() {
-        @SuppressWarnings({"deprecation", "synthetic-access"})
+
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
+            if (action != null) {
+                switch (action) {
+                    case BluetoothDevice.ACTION_ACL_CONNECTED:
+                        BluetoothDevice connectedBluetoothDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                        if (isHeadsetDevice(connectedBluetoothDevice)) {
+                            Log.d(TAG, "Bluetooth " + connectedBluetoothDevice.getName() + " connected");
+                            bluetoothDevice = connectedBluetoothDevice;
+                            listener.onBluetoothConnected(bluetoothDevice);
+                        }
+                        break;
+                    case BluetoothDevice.ACTION_ACL_DISCONNECTED:
+                        BluetoothDevice disconnectedBluetoothDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                        if (disconnectedBluetoothDevice.equals(bluetoothDevice)) {
+                            bluetoothDevice = null;
+                        }
+                        Log.d(TAG, "Bluetooth disconnected");
+                        listener.onBluetoothDisconnected();
+                        break;
+                    case AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED:
+                        int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,
+                                AudioManager.SCO_AUDIO_STATE_ERROR);
 
-            if (action.equals(BluetoothDevice.ACTION_ACL_CONNECTED)) {
-                BluetoothDevice mConnectedHeadset = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                BluetoothClass bluetoothClass = mConnectedHeadset.getBluetoothClass();
-                if (bluetoothClass != null) {
-                    // Check if device is a headset. Besides the 2 below, are there other
-                    // device classes also qualified as headset?
-                    int deviceClass = bluetoothClass.getDeviceClass();
-                    if (deviceClass == BluetoothClass.Device.AUDIO_VIDEO_HANDSFREE
-                            || deviceClass == BluetoothClass.Device.AUDIO_VIDEO_WEARABLE_HEADSET) {
-                        // start bluetooth Sco audio connection.
-                        // Calling startBluetoothSco() always returns faIL here,
-                        // that why a count down timer is implemented to call
-                        // startBluetoothSco() in the onTick.
-                        mAudioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-                        mIsCountDownOn = true;
-                        mCountDown.start();
-
-                        // override this if you want to do other thing when the device is connected.
-                        listener.onHeadsetConnected();
-                    }
-                }
-
-                Log.d(TAG, mConnectedHeadset.getName() + " connected");
-            } else if (action.equals(BluetoothDevice.ACTION_ACL_DISCONNECTED)) {
-                Log.d(TAG, "Headset disconnected");
-
-                if (mIsCountDownOn) {
-                    mIsCountDownOn = false;
-                    mCountDown.cancel();
-                }
-
-                mAudioManager.setMode(AudioManager.MODE_NORMAL);
-
-                // override this if you want to do other thing when the device is disconnected.
-                listener.onHeadsetDisconnected();
-            } else if (action.equals(AudioManager.ACTION_SCO_AUDIO_STATE_CHANGED)) {
-                int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE,
-                        AudioManager.SCO_AUDIO_STATE_ERROR);
-
-                if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-                    mIsOnHeadsetSco = true;
-
-                    if (mIsStarting) {
-                        // When the device is connected before the application starts,
-                        // ACTION_ACL_CONNECTED will not be received, so call onHeadsetConnected here
-                        mIsStarting = false;
-                        listener.onHeadsetConnected();
-                    }
-
-                    if (mIsCountDownOn) {
-                        mIsCountDownOn = false;
-                        mCountDown.cancel();
-                    }
-
-                    // override this if you want to do other thing when Sco audio is connected.
-                    listener.onScoAudioConnected();
-
-                    Log.d(TAG, "Sco connected");
-                } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
-                    Log.d(TAG, "Sco disconnected");
-
-                    // Always receive SCO_AUDIO_STATE_DISCONNECTED on call to startBluetooth()
-                    // which at that stage we do not want to do anything. Thus the if condition.
-                    if (!mIsStarting) {
-                        mIsOnHeadsetSco = false;
-
-                        // Need to call stopBluetoothSco(), otherwise startBluetoothSco()
-                        // will not be successful.
-                        mAudioManager.stopBluetoothSco();
-
-                        // override this if you want to do other thing when Sco audio is disconnected.
-                        listener.onScoAudioDisconnected();
-                    }
+                        if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+                            Log.d(TAG, "Bluetooth Sco Audio connected");
+                        } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+                            Log.d(TAG, "Bluetooth Sco Audio disconnected");
+                        }
+                        break;
                 }
             }
         }
     };
 
-    /**
-     * Try to connect to audio headset in onTick.
-     */
-    private CountDownTimer mCountDown = new CountDownTimer(10000, 1000) {
-
-        @SuppressWarnings("synthetic-access")
-        @Override
-        public void onTick(long millisUntilFinished) {
-            // When this call is successful, this count down timer will be canceled.
-            try {
-                mAudioManager.startBluetoothSco();
-            } catch (Exception ignored) {
-
-            }
-            Log.d(TAG, "\nonTick start bluetooth Sco");
+    private boolean isHeadsetDevice(BluetoothDevice bluetoothDevice) {
+        BluetoothClass bluetoothClass = bluetoothDevice.getBluetoothClass();
+        if (bluetoothClass != null) {
+            int deviceClass = bluetoothClass.getDeviceClass();
+            return deviceClass == BluetoothClass.Device.AUDIO_VIDEO_HANDSFREE
+                    || deviceClass == BluetoothClass.Device.AUDIO_VIDEO_WEARABLE_HEADSET
+                    || deviceClass == BluetoothClass.Device.AUDIO_VIDEO_CAR_AUDIO;
         }
-
-        @SuppressWarnings("synthetic-access")
-        @Override
-        public void onFinish() {
-            // Calls to startBluetoothSco() in onStick are not successful.
-            // Should implement something to inform user of this failure
-            mIsCountDownOn = false;
-            mAudioManager.setMode(AudioManager.MODE_NORMAL);
-
-            Log.d(TAG, "\nonFinish fail to connect to headset audio");
-        }
-    };
-
+        return false;
+    }
 }
-

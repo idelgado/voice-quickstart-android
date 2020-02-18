@@ -1,4 +1,4 @@
-package com.twilio.voice.quickstart.audio.helper;
+package com.twilio.voice.quickstart.audio;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
