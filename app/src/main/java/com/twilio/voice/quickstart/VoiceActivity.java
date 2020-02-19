@@ -132,13 +132,10 @@ public class VoiceActivity extends AppCompatActivity {
         voiceBroadcastReceiver = new VoiceBroadcastReceiver();
         registerReceiver();
 
-        audioDeviceSelector = new AudioDeviceSelector(this, new AudioDeviceChangeListener() {
-            @Override
-            public void onAvailableAudioDevices(@NonNull List<AudioDevice> audioDevices, @Nullable AudioDevice selectedAudioDevice) {
-                audioDevice = selectedAudioDevice;
-            }
+        audioDeviceSelector = new AudioDeviceSelector(this);
+        audioDeviceSelector.start((audioDevices, selectedAudioDevice) -> {
+
         });
-        audioDeviceSelector.start();
 
         /*
          * Enable changing the volume using the up/down keys during a conversation

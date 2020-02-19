@@ -11,6 +11,7 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
+import android.os.Handler;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -23,13 +24,13 @@ import java.util.List;
 public class AudioDeviceSelector {
     private static final String TAG = "AudioDeviceSelector";
 
-    private final AudioDeviceChangeListener audioDeviceChangeListener;
     private final Context context;
     private final AudioManager audioManager;
     private final boolean hasEarpiece;
     private final boolean hasSpeakerphone;
     private final BluetoothController bluetoothController;
 
+    private @Nullable AudioDeviceChangeListener audioDeviceChangeListener;
     private @Nullable AudioDevice selectedDevice;
     private @Nullable AudioDevice userSelectedDevice;
     private @NonNull State state;
@@ -53,9 +54,7 @@ public class AudioDeviceSelector {
     private AudioDevice WIRED_HEADSET_AUDIO_DEVICE = new AudioDevice(AudioDevice.Type.WIRED_HEADSET, "Wired Headset");
     private @Nullable AudioDevice bluetoothAudioDevice;
 
-    public AudioDeviceSelector(@NonNull Context context,
-                               @NonNull AudioDeviceChangeListener audioDeviceChangeListener) {
-        this.audioDeviceChangeListener = audioDeviceChangeListener;
+    public AudioDeviceSelector(@NonNull Context context) {
         ThreadUtils.checkIsOnMainThread();
         this.context = context.getApplicationContext();
         this.audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
@@ -84,12 +83,23 @@ public class AudioDeviceSelector {
     /**
      * Start listening for audio device changes
      */
-    public void start() {
+    public void start(@NonNull AudioDeviceChangeListener listener) {
         ThreadUtils.checkIsOnMainThread();
+        this.audioDeviceChangeListener = listener;
         switch (state) {
             case STOPPED:
-                context.registerReceiver(wiredHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
                 bluetoothController.start();
+                context.registerReceiver(wiredHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
+                /*
+                 * Ensure that devices are enumerated when the wired headset receiver does not
+                 * broadcast an action.
+                 */
+                final Handler handler = new Handler();
+                handler.post(() -> {
+                    if (!wiredHeadseatAvaiable) {
+                        enumerateDevices();
+                    }
+                });
                 state = State.STARTED;
                 break;
             case STARTED:
