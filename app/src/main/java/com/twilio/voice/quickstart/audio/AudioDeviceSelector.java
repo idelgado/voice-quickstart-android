@@ -35,7 +35,7 @@ public class AudioDeviceSelector {
     private @Nullable AudioDevice userSelectedDevice;
     private @NonNull State state;
     private @NonNull WiredHeadsetReceiver wiredHeadsetReceiver;
-    private boolean wiredHeadseatAvaiable;
+    private boolean wiredHeadsetAvailable;
     private ArrayList<AudioDevice> availableAudioDevices = new ArrayList<>();
 
     // Saved Audio Settings
@@ -91,12 +91,14 @@ public class AudioDeviceSelector {
                 bluetoothController.start();
                 context.registerReceiver(wiredHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
                 /*
-                 * Ensure that devices are enumerated when the wired headset receiver does not
-                 * broadcast an action.
+                 * Enumerate devices when the wired headset receiver does not broadcast an action.
+                 * The broadcast receiver will not broadcast an action when a wired headset is not
+                 * initially plugged in. This task is intentionally run immediately after the wired
+                 * headset broadcast receiver task runs.
                  */
                 final Handler handler = new Handler();
                 handler.post(() -> {
-                    if (!wiredHeadseatAvaiable) {
+                    if (!wiredHeadsetAvailable) {
                         enumerateDevices();
                     }
                 });
@@ -104,7 +106,8 @@ public class AudioDeviceSelector {
                 break;
             case STARTED:
             case ACTIVE:
-                throw new IllegalStateException();
+                // no-op
+                break;
         }
     }
 
@@ -114,14 +117,16 @@ public class AudioDeviceSelector {
     public void stop() {
         ThreadUtils.checkIsOnMainThread();
         switch (state) {
+            case ACTIVE:
+                deactivate();
+                // Fall through after deactivating the active device
             case STARTED:
                 context.unregisterReceiver(wiredHeadsetReceiver);
                 bluetoothController.stop();
                 state = State.STOPPED;
                 break;
-            case ACTIVE:
             case STOPPED:
-                throw new IllegalStateException();
+                // no-op
         }
     }
 
@@ -265,14 +270,14 @@ public class AudioDeviceSelector {
             ThreadUtils.checkIsOnMainThread();
             int state = intent.getIntExtra("state", STATE_UNPLUGGED);
             if (state == STATE_PLUGGED) {
-                wiredHeadseatAvaiable = true;
+                wiredHeadsetAvailable = true;
                 Log.d(TAG, "Wired Headset available");
                 if (AudioDeviceSelector.this.state == State.ACTIVE) {
                     userSelectedDevice = WIRED_HEADSET_AUDIO_DEVICE;
                 }
                 enumerateDevices();
             } else {
-                wiredHeadseatAvaiable = false;
+                wiredHeadsetAvailable = false;
                 enumerateDevices();
             }
         }
@@ -283,10 +288,10 @@ public class AudioDeviceSelector {
         if (bluetoothAudioDevice != null) {
             availableAudioDevices.add(bluetoothAudioDevice);
         }
-        if (wiredHeadseatAvaiable) {
+        if (wiredHeadsetAvailable) {
             availableAudioDevices.add(WIRED_HEADSET_AUDIO_DEVICE);
         }
-        if (hasEarpiece && !wiredHeadseatAvaiable) {
+        if (hasEarpiece && !wiredHeadsetAvailable) {
             availableAudioDevices.add(EARPIECE_AUDIO_DEVICE);
         }
         if (hasSpeakerphone) {
@@ -312,12 +317,14 @@ public class AudioDeviceSelector {
             activate();
         }
 
-        if (selectedDevice != null) {
-            audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
-                    new AudioDevice(selectedDevice.type, selectedDevice.name));
-        } else {
-            audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
-                    selectedDevice);
+        if (audioDeviceChangeListener != null) {
+            if (selectedDevice != null) {
+                audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
+                        new AudioDevice(selectedDevice.type, selectedDevice.name));
+            } else {
+                audioDeviceChangeListener.onAvailableAudioDevices(availableAudioDevices,
+                        null);
+            }
         }
     }
 
